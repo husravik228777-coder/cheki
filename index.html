@@ -227,23 +227,37 @@ function form(){const d=draft;return `<div class="ov"><div class="bar"><button c
 function showForm(){const s=$('#modal .sc'),y=s?s.scrollTop:0;$('#modal').innerHTML=form();const n=$('#modal .sc');if(n)n.scrollTop=y}
 const toast=t=>{const e=document.createElement('div');e.className='toast';e.textContent=t;document.body.append(e);setTimeout(()=>e.remove(),3500)};
 function newDraft(o={}){draft={folder:o.folder??(fl&&fl!=='_'?fl:''),date:o.date||today(),items:(o.items||[]).map(x=>({name:x.name||'',price:x.price??''})),total:o.total??'',imgs:o.imgs||[],te:!!o.te,editId:o.editId||null,addedAt:o.addedAt};if(!draft.items.length&&!draft.imgs.length)draft.items=[{name:'',price:''}];showForm()}
-function shrink(f){return new Promise((res,rej)=>{const u=URL.createObjectURL(f),im=new Image();im.onload=()=>{const k=Math.min(1,1400/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);URL.revokeObjectURL(u);c.toBlob(b=>res({blob:b,url:c.toDataURL('image/jpeg',.7)}),'image/jpeg',.8)};im.onerror=rej;im.src=u})}
+function shrink(f,mx=1400){return new Promise((res,rej)=>{const u=URL.createObjectURL(f),im=new Image();im.onload=()=>{const k=Math.min(1,mx/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);URL.revokeObjectURL(u);c.toBlob(b=>res({blob:b,url:c.toDataURL('image/jpeg',.7)}),'image/jpeg',.8)};im.onerror=rej;im.src=u})}
 const PROMPT=`Это фото (или несколько фото) одного кассового чека. Распознай текст и верни ТОЛЬКО JSON без пояснений: {"date":"YYYY-MM-DD или пусто","items":[{"name":"общее название товара","price":число}],"total":число}. name — только общее название товара одним-двумя словами с заглавной буквы, остальные строчные, без размеров, веса, объёма, количества, артикулов и брендов (например, «плитка 30х60» → «Плитка», «Молоко Простоквашино 3,2% 930мл» → «Молоко»). price — итоговая стоимость позиции (с учётом количества). Числа без валюты, десятичная точка.`;
+function parseReceipt(txt){
+ const lines=txt.split('\n').map(l=>l.replace(/\s+/g,' ').trim()).filter(l=>l.length>1);
+ const PRICE=/(\d{1,3}(?:[ .]?\d{3})*[.,]\d{2}|\d{1,6})\s*(?:₽|р\.?|руб\.?|P|Р)?$/i;
+ const SKIP=/нал|безнал|карт|ндс|инн|чек|кассир|смена|спасибо|фн|фд|фп|рн|касса|оплат|сдача|скидк|бонус|тел|адрес|www|http|ккт|фискал|rub|руб|сумма/i;
+ const QTY=/^\d+([.,]\d+)?\s*[xхх×*]\s*\d/i;
+ const clean=n=>{n=n.split(/\s+\d/)[0].replace(/[^А-Яа-яЁёA-Za-z\- ]/g,' ').replace(/\s+/g,' ').trim();return n.length>=2?cap(n):''};
+ const items=[];let total=0,pending='';
+ for(const l of lines){
+  const tm=l.match(PRICE);
+  if(/итог|всего|к оплате/i.test(l)&&tm){total=num(tm[1]);continue}
+  if(SKIP.test(l)){pending='';continue}
+  if(QTY.test(l)&&tm&&pending){const p=num(tm[1]);if(p>0)items.push({name:clean(pending),price:p});pending='';continue}
+  if(tm){
+   const name=clean(l.slice(0,tm.index))||clean(pending),p=num(tm[1]);
+   if(name&&p>0&&p<1000000)items.push({name,price:p});
+   pending='';continue}
+  if(/[A-Za-zА-Яа-яЁё]{2,}/.test(l))pending=l;
+ }
+ if(!total)total=items.reduce((a,x)=>a+x.price,0);
+ return {items,total};
+}
 async function scan(fs){
  if(window.AndroidOcr){
   // Сначала уменьшаем фото: полноразмерный снимок в мост к Android переполняет память и приводит к сбою
-  let im;try{im=await shrink(fs[0])}catch(e){toast('Не удалось открыть фото');return}
+  let im;try{im=await shrink(fs[0],1800)}catch(e){toast('Не удалось открыть фото');return}
   const dataUrl=im.url,b64=dataUrl.split(',')[1];
   window.onOcr=txt=>{
     if(txt.startsWith('!')){newDraft({imgs:[dataUrl]});toast(txt.slice(1)+' — заполните вручную');return}
-    const items=[];let total='';
-    txt.split('\n').forEach(line=>{
-     const m=line.trim().match(/^(.*?)\s+(\d+[.,]\d{2})\s*$/);
-     if(!m)return;
-     const name=m[1].trim();
-     if(/итог/i.test(name)){total=num(m[2]);return}
-     if(name.length>1)items.push({name:cap(name),price:num(m[2])});
-    });
+    const {items,total}=parseReceipt(txt);
     newDraft({items,total,imgs:[dataUrl],te:!!total});
     toast('Проверьте данные и сохраните')};
   AndroidOcr.recognize(b64);
